@@ -69,7 +69,10 @@ class AppAutomationTester:
         
         try:
             while self.is_connected and self.ws and not self.ws.closed:
-                msg = await self.ws.receive()
+                try:
+                    msg = await self.ws.receive()
+                except asyncio.CancelledError:
+                    break
                 
                 if msg.type == aiohttp.WSMsgType.BINARY:
                     data = msg.data
@@ -88,9 +91,20 @@ class AppAutomationTester:
                             try:
                                 response = json.loads(payload.decode('utf-8'))
                                 logger.info(f"AI 响应：{response.get('text', '')}")
+                            except Exception as e:
+                                logger.debug(f"解析失败：{e}")
+                        
+                        # 流式响应
+                        elif msg_type == 0x03:  # 流式文本
+                            try:
+                                chunk = json.loads(payload.decode('utf-8'))
+                                logger.debug(f"流式片段：{chunk.get('content', '')}")
                             except:
                                 pass
-                        
+                                
+                elif msg.type == aiohttp.WSMsgType.TEXT:
+                    logger.info(f"收到文本：{msg.data}")
+                    
                 elif msg.type == aiohttp.WSMsgType.CLOSED:
                     logger.info("连接已关闭")
                     self.is_connected = False
@@ -109,6 +123,12 @@ class AppAutomationTester:
         """发送音频数据"""
         if not self.is_connected or not self.ws:
             logger.error("未连接，无法发送")
+            return False
+        
+        # 检查连接状态
+        if self.ws.closed:
+            logger.error("WebSocket 已关闭")
+            self.is_connected = False
             return False
         
         message = bytes([0x01]) + audio_data
@@ -173,6 +193,10 @@ class AppAutomationTester:
         
         # 2. 发送音频测试
         logger.info("\n[测试 2] 发送模拟音频...")
+        
+        # 等待连接稳定
+        await asyncio.sleep(1.0)
+        
         await self.send_mock_audio(duration_sec=2.0)
         logger.info("✅ 音频发送完成")
         

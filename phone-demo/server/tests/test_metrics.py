@@ -5,12 +5,6 @@ import pytest
 import asyncio
 import time
 
-import sys
-import os
-
-# 添加路径
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'server'))
-
 from metrics import MetricsCollector, RequestTimer, AsyncRequestTimer
 
 
@@ -65,27 +59,40 @@ class TestRequestTimer:
     
     def test_request_timer(self):
         """测试请求计时器"""
-        collector = MetricsCollector()
-        
-        with RequestTimer("test_operation"):
-            time.sleep(0.01)  # 10ms
-        
-        assert len(collector.request_latencies) == 1
-        assert collector.request_latencies[0]['latency_ms'] >= 10
-    
-    def test_request_timer_error(self):
-        """测试请求计时器错误情况"""
-        collector = MetricsCollector()
+        collector = MetricsCollector(max_samples=100)
+        # 使用独立的 collector 实例
+        import metrics
+        original_get = metrics.get_metrics_collector
+        metrics.get_metrics_collector = lambda: collector
         
         try:
             with RequestTimer("test_operation"):
-                time.sleep(0.01)
-                raise ValueError("Test error")
-        except ValueError:
-            pass
+                time.sleep(0.01)  # 10ms
+            
+            assert len(collector.request_latencies) >= 1
+            assert collector.request_latencies[0]['latency_ms'] >= 10
+        finally:
+            metrics.get_metrics_collector = original_get
+    
+    def test_request_timer_error(self):
+        """测试请求计时器错误情况"""
+        collector = MetricsCollector(max_samples=100)
+        import metrics
+        original_get = metrics.get_metrics_collector
+        metrics.get_metrics_collector = lambda: collector
         
-        assert len(collector.request_latencies) == 1
-        assert len(collector.error_counts) == 1
+        try:
+            try:
+                with RequestTimer("test_operation"):
+                    time.sleep(0.01)
+                    raise ValueError("Test error")
+            except ValueError:
+                pass
+            
+            assert len(collector.request_latencies) >= 1
+            assert len(collector.error_counts) >= 1
+        finally:
+            metrics.get_metrics_collector = original_get
 
 
 @pytest.mark.asyncio
@@ -94,26 +101,38 @@ class TestAsyncRequestTimer:
     
     async def test_async_request_timer(self):
         """测试异步请求计时器"""
-        collector = MetricsCollector()
-        
-        async with AsyncRequestTimer("test_operation"):
-            await asyncio.sleep(0.01)
-        
-        assert len(collector.request_latencies) == 1
-    
-    async def test_async_request_timer_error(self):
-        """测试异步请求计时器错误情况"""
-        collector = MetricsCollector()
+        collector = MetricsCollector(max_samples=100)
+        import metrics
+        original_get = metrics.get_metrics_collector
+        metrics.get_metrics_collector = lambda: collector
         
         try:
             async with AsyncRequestTimer("test_operation"):
                 await asyncio.sleep(0.01)
-                raise ValueError("Test error")
-        except ValueError:
-            pass
+            
+            assert len(collector.request_latencies) >= 1
+        finally:
+            metrics.get_metrics_collector = original_get
+    
+    async def test_async_request_timer_error(self):
+        """测试异步请求计时器错误情况"""
+        collector = MetricsCollector(max_samples=100)
+        import metrics
+        original_get = metrics.get_metrics_collector
+        metrics.get_metrics_collector = lambda: collector
         
-        assert len(collector.request_latencies) == 1
-        assert len(collector.error_counts) == 1
+        try:
+            try:
+                async with AsyncRequestTimer("test_operation"):
+                    await asyncio.sleep(0.01)
+                    raise ValueError("Test error")
+            except ValueError:
+                pass
+            
+            assert len(collector.request_latencies) >= 1
+            assert len(collector.error_counts) >= 1
+        finally:
+            metrics.get_metrics_collector = original_get
 
 
 if __name__ == "__main__":

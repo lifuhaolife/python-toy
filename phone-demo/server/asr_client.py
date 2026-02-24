@@ -165,7 +165,7 @@ class OptimizedASRClient:
                 logger.info("未检测到有效语音")
                 return ""
             
-            # 4. Whisper 识别
+            # 4. Whisper 识别（优化参数提高准确率）
             segments, info = self.model.transcribe(
                 audio_array,
                 language=self.language,
@@ -176,12 +176,20 @@ class OptimizedASRClient:
                     min_silence_duration_ms=self.vad_min_silence,
                     min_speech_duration_ms=self.vad_min_speech
                 ),
-                beam_size=5,  # 束搜索宽度
-                best_of=3,    # 最佳候选数
-                temperature=0.0,  # 贪婪解码
-                compression_ratio_threshold=2.5,  # 压缩率阈值
-                log_prob_threshold=-1.0,  # 对数概率阈值
-                no_speech_threshold=0.6   # 无语音阈值
+                # 优化识别参数
+                beam_size=5,
+                best_of=5,           # 增加候选数
+                temperature=0.0,      # 贪婪解码，最稳定
+                length_penalty=1.0,   # 长度惩罚
+                repetition_penalty=1.0,  # 重复惩罚
+                no_repeat_ngram_size=3,  # 禁止重复 3 元语法
+                compression_ratio_threshold=2.5,
+                log_prob_threshold=-1.0,
+                no_speech_threshold=0.6,
+                # 条件文本概率阈值
+                condition_on_previous_text=True,
+                # 时间戳
+                word_timestamps=False
             )
             
             # 5. 收集识别结果
@@ -213,34 +221,90 @@ class OptimizedASRClient:
         """
         文本后处理
         
+        功能:
+        1. 繁体转简体
+        2. 去除特殊字符
+        3. 去除无意义词
+        4. 规范化标点
+
         Args:
             text: 识别的原始文本
-        
+
         Returns:
             处理后的文本
         """
         if not text:
             return ""
-        
-        # 去除首尾空格
+
+        # 1. 繁体转简体
+        text = self._traditional_to_simplified(text)
+
+        # 2. 去除首尾空格
         text = text.strip()
-        
-        # 去除特殊字符
+
+        # 3. 去除特殊字符（保留中文标点）
         import re
         text = re.sub(r'[^\w\s，。！？、；：""''（）【】《》\.\,\!\?\;]', '', text)
-        
-        # 去除连续的标点符号
+
+        # 4. 去除连续的标点符号
         text = re.sub(r'[，。！？]{2,}', lambda m: m.group(0)[0], text)
-        
-        # 去除无意义的词
+
+        # 5. 去除无意义的词
         meaningless = ['嗯', '啊', '呃', '哦', '哎', '嘛', '啦']
         for word in meaningless:
             text = text.replace(word, '')
-        
-        # 再次清理空格
+
+        # 6. 再次清理空格
         text = ' '.join(text.split())
-        
+
         return text
+    
+    def _traditional_to_simplified(self, text: str) -> str:
+        """
+        繁体中文转简体中文
+        
+        使用常见繁体 - 简体映射表
+        
+        Args:
+            text: 繁体中文文本
+        
+        Returns:
+            简体中文文本
+        """
+        # 常见繁体 - 简体映射（按出现频率排序）
+        traditional_simplified = {
+            # 高频词
+            '麼': '么', '為': '为', '什': '什',  # 什麼 -> 什么
+            '們': '们', '個': '个', '這': '这',
+            '樣': '样', '說': '说', '話': '话',
+            '時': '时', '會': '会', '到': '到',
+            '現': '现', '在': '在', '起': '起',
+            '來': '来', '點': '点', '兒': '儿',
+            
+            # 常用词
+            '讓': '让', '請': '请', '問': '问',
+            '知': '知', '道': '道', '覺': '觉',
+            '得': '得', '想': '想', '要': '要',
+            '歡': '欢', '迎': '迎', '謝': '谢',
+            '謝': '谢', '對': '对', '於': '于',
+            '沒': '没', '有': '有', '麼': '么',
+            
+            # 其他
+            '邊': '边', '裏': '里', '外': '外',
+            '多': '多', '少': '少', '麼': '么',
+            '吧': '吧', '嗎': '吗', '呢': '呢',
+            '著': '着', '過': '过', '還': '还',
+            '麼': '么', '而': '而', '已': '已',
+            '經': '经', '麼': '么', '麼': '么',
+        }
+        
+        # 逐个字符转换
+        result = []
+        for char in text:
+            simplified = traditional_simplified.get(char, char)
+            result.append(simplified)
+        
+        return ''.join(result)
 
 
 # 全局实例

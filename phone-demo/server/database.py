@@ -186,8 +186,7 @@ class Database:
             params = (device_id, limit)
         
         cursor = await self._execute(sql, params)
-        rows = await cursor.fetchall()
-        return [dict(row) for row in rows]
+        return await self._fetchall(cursor)
 
     async def get_conversation_by_session(self, session_id: str) -> List[Dict[str, Any]]:
         """获取指定会话的所有对话"""
@@ -209,8 +208,7 @@ class Database:
             params = (session_id,)
         
         cursor = await self._execute(sql, params)
-        rows = await cursor.fetchall()
-        return [dict(row) for row in rows]
+        return await self._fetchall(cursor)
 
     async def delete_old_conversations(self, device_id: str, days: int = 30) -> int:
         """删除指定天数之前的对话记录"""
@@ -283,8 +281,7 @@ class Database:
             params = (device_id, summary_type)
         
         cursor = await self._execute(sql, params)
-        row = await cursor.fetchone()
-        return dict(row) if row else None
+        return await self._fetchone(cursor)
 
     async def get_summaries_in_range(self, device_id: str, start_date: date, end_date: date) -> List[Dict[str, Any]]:
         """获取指定日期范围内的摘要"""
@@ -304,8 +301,7 @@ class Database:
             params = (device_id, start_date.isoformat(), end_date.isoformat())
         
         cursor = await self._execute(sql, params)
-        rows = await cursor.fetchall()
-        return [dict(row) for row in rows]
+        return await self._fetchall(cursor)
 
     # ==================== 设备管理 ====================
 
@@ -361,8 +357,7 @@ class Database:
             params = (device_id,)
         
         cursor = await self._execute(sql, params)
-        row = await cursor.fetchone()
-        return dict(row) if row else None
+        return await self._fetchone(cursor)
 
     async def get_all_devices(self) -> List[Dict[str, Any]]:
         """获取所有设备"""
@@ -374,8 +369,7 @@ class Database:
             params = ()
         
         cursor = await self._execute(sql, params)
-        rows = await cursor.fetchall()
-        return [dict(row) for row in rows]
+        return await self._fetchall(cursor)
 
     # ==================== 用户偏好管理 ====================
 
@@ -431,10 +425,10 @@ class Database:
             params = (device_id,)
         
         cursor = await self._execute(sql, params)
-        row = await cursor.fetchone()
+        row = await self._fetchone(cursor)
 
         if row:
-            data = dict(row)
+            data = row
             if data.get('favorite_topics'):
                 data['favorite_topics'] = json.loads(data['favorite_topics'])
             return data
@@ -508,7 +502,7 @@ class Database:
             params = (key,)
         
         cursor = await self._execute(sql, params)
-        row = await cursor.fetchone()
+        row = await self._fetchone(cursor)
         return row['config_value'] if row else default
 
     async def set_config(self, key: str, value: str, description: str = None):
@@ -566,8 +560,8 @@ class Database:
             params = (device_id,)
         
         cursor = await self._execute(sql, params)
-        row = await cursor.fetchone()
-        return dict(row) if row else {}
+        result = await self._fetchone(cursor)
+        return result if result else {}
 
     async def get_total_conversations(self, device_id: str = None) -> int:
         """获取对话总数"""
@@ -702,8 +696,7 @@ class Database:
         
         params.append(limit)
         cursor = await self._execute(sql, tuple(params))
-        rows = await cursor.fetchall()
-        return [dict(row) for row in rows]
+        return await self._fetchall(cursor)
 
     async def get_api_usage_stats(
         self, device_id: str = None, start_date: date = None, end_date: date = None
@@ -750,8 +743,7 @@ class Database:
             """
         
         cursor = await self._execute(sql, tuple(params))
-        row = await cursor.fetchone()
-        return dict(row) if row else {}
+        return await self._fetchone(cursor)
 
     async def cleanup_old_logs(self, days: int = 30) -> int:
         """清理旧的日志记录"""

@@ -224,42 +224,45 @@ class ToyPhoneUI(BoxLayout):
         """连接服务器（同步方式）"""
         app_logger.info("开始连接...")
         self.log("正在连接...")
-        
+
         def do_connect():
             import aiohttp
             import asyncio
-            
+
             async def _connect():
                 try:
                     app_logger.info("创建 session...")
                     self.session = aiohttp.ClientSession()
-                    
+
                     url = f"ws://{SERVER_HOST}:{SERVER_PORT}/ws/audio/{DEVICE_ID}"
                     app_logger.info(f"连接：{url}")
-                    
+
                     ws = await self.session.ws_connect(url, timeout=5.0)
-                    
+
                     # 使用锁保护 WebSocket 对象
                     with self.ws_lock:
                         self.ws = ws
-                    
+
                     app_logger.info("连接成功!")
-                    
+
                     # 更新 UI
                     Clock.schedule_once(lambda dt: self._on_connected(), 0)
-                    
+
                     # 启动接收循环
                     await self._receive_loop()
-                    
+
                 except Exception as e:
                     app_logger.error(f"连接失败：{e}")
                     Clock.schedule_once(lambda dt: self._on_connect_error(str(e)), 0)
-                finally:
-                    if self.session:
-                        await self.session.close()
-            
-            asyncio.run(_connect())
-        
+
+            # 运行连接
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
+            try:
+                loop.run_until_complete(_connect())
+            finally:
+                loop.close()
+
         # 在后台线程运行
         thread = threading.Thread(target=do_connect, daemon=True)
         thread.start()
@@ -520,7 +523,7 @@ class ToyPhoneUI(BoxLayout):
     def disconnect(self):
         """断开连接"""
         app_logger.info("断开连接...")
-        
+
         self.is_connected = False
         self.status_text = "未连接"
         self.status_label.text = "未连接"
@@ -532,7 +535,7 @@ class ToyPhoneUI(BoxLayout):
         self.record_btn.text = "按住说话"
         self.record_btn.background_color = (0.3, 0.3, 0.3, 1)
         self.log("已断开")
-        
+
         # 停止录音
         self.is_recording = False
         if self.audio_stream:
@@ -541,25 +544,25 @@ class ToyPhoneUI(BoxLayout):
                 self.audio_stream.close()
             except:
                 pass
+
+        # 关闭 WebSocket（直接关闭，不使用异步）
+        with self.ws_lock:
+            if self.ws:
+                try:
+                    import asyncio
+                    loop = asyncio.new_event_loop()
+                    asyncio.set_event_loop(loop)
+                    try:
+                        loop.run_until_complete(self.ws.close())
+                        if self.session:
+                            loop.run_until_complete(self.session.close())
+                    finally:
+                        loop.close()
+                except Exception as e:
+                    app_logger.error(f"关闭连接失败：{e}")
         
-        # 关闭 WebSocket
-        def close_ws():
-            import asyncio
-            
-            async def _close():
-                with self.ws_lock:
-                    if self.ws and not self.ws.closed:
-                        await self.ws.close()
-                    if self.session:
-                        await self.session.close()
-            
-            try:
-                asyncio.run(_close())
-            except:
-                pass
-        
-        thread = threading.Thread(target=close_ws, daemon=True)
-        thread.start()
+        self.ws = None
+        self.session = None
 
 
 class ToyPhoneApp(App):

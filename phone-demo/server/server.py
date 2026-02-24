@@ -18,6 +18,11 @@ from fastapi.middleware.cors import CORSMiddleware
 from dotenv import load_dotenv
 import httpx
 
+# 修复 Windows 控制台编码问题
+if sys.platform == 'win32':
+    import io
+    sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8', errors='replace')
+
 # 创建日志文件夹
 LOG_DIR = os.path.join(os.path.dirname(__file__), 'logs')
 os.makedirs(LOG_DIR, exist_ok=True)
@@ -66,7 +71,9 @@ logger.info("=" * 80)
 logger.info(f"日志文件：{log_filepath}")
 logger.info("=" * 80)
 
-load_dotenv()
+# 加载环境变量（从上级目录 phone-demo/.env）
+env_path = os.path.join(os.path.dirname(__file__), '..', '.env')
+load_dotenv(env_path)
 
 # 配置
 HOST = os.getenv("HOST", "0.0.0.0")
@@ -323,6 +330,7 @@ async def lifespan(app: FastAPI):
     
     # 1. 初始化 AI 客户端
     logger.info("初始化 AI 客户端...")
+    logger.info(f"AI_API_KEY: {AI_API_KEY[:10]}...{AI_API_KEY[-6:]}" if len(AI_API_KEY) > 20 else f"AI_API_KEY: ***")
     ai_client = SimpleAIClient(AI_API_KEY)
     
     # 2. 初始化 TTS 客户端

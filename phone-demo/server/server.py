@@ -3,7 +3,7 @@
 支持手机 APP 和 ESP32 设备连接
 
 作者：Toy Project
-版本：1.0.0
+版本：2.0.0 (支持流式响应和数据库记忆)
 """
 import os
 import sys
@@ -22,6 +22,10 @@ import httpx
 if sys.platform == 'win32':
     import io
     sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8', errors='replace')
+
+# 导入数据库和记忆管理
+from database import get_database, Database
+from memory_manager import get_memory_manager, MemoryManager
 
 # 创建日志文件夹
 LOG_DIR = os.path.join(os.path.dirname(__file__), 'logs')
@@ -86,11 +90,12 @@ SAMPLE_RATE = 16000
 
 
 class SimpleAIClient:
-    """简易 AI 客户端"""
-    
-    def __init__(self, api_key: str):
+    """简易 AI 客户端（支持流式响应）"""
+
+    def __init__(self, api_key: str, db=None):
         self.api_key = api_key
-        self.client = httpx.AsyncClient(timeout=30.0)
+        self.client = httpx.AsyncClient(timeout=60.0)
+        self.db = db
         self.system_prompt = """你是一个亲切友好的 AI 大姐姐，专门陪伴 3-12 岁的儿童。
 你的特点是：
 1. 语气温柔亲切，使用简单易懂的语言
@@ -101,45 +106,308 @@ class SimpleAIClient:
 6. 每次回复控制在 50 字以内，适合语音播放
 
 请始终保持耐心和鼓励的态度，让孩子感受到关爱。"""
-    
-    async def chat(self, message: str, context: list = None) -> str:
-        """发送对话请求"""
+
+    async def chat(self, message: str, context: list = None, device_id: str = None, session_id: str = None) -> str:
+        """发送对话请求（非流式，完整记录）"""
+        import uuid
+        from datetime import datetime
+        
+        request_id = str(uuid.uuid4())
+        request_start_time = datetime.now()
+        
         messages = [
             {"role": "system", "content": self.system_prompt},
         ]
-        
+
         if context:
             messages.extend(context[-5:])
-        
+
         messages.append({"role": "user", "content": message})
+
+        # 构建请求数据
+        request_data = {
+            "model": "glm-4",
+            "messages": messages,
+            "max_tokens": 150,
+            "temperature": 0.7
+        }
+        
+        api_endpoint = "https://open.bigmodel.cn/api/paas/v4/chat/completions"
         
         try:
             headers = {
                 "Authorization": f"Bearer {self.api_key}",
                 "Content-Type": "application/json"
             }
-            
-            data = {
-                "model": "glm-4",
-                "messages": messages,
-                "max_tokens": 150,
-                "temperature": 0.7
-            }
-            
+
             response = await self.client.post(
-                "https://open.bigmodel.cn/api/paas/v4/chat/completions",
+                api_endpoint,
                 headers=headers,
-                json=data
+                json=request_data
             )
+            
+            request_end_time = datetime.now()
+            duration_ms = int((request_end_time - request_start_time).total_seconds() * 1000)
+            
             response.raise_for_status()
-            
             result = response.json()
-            return result["choices"][0]["message"]["content"]
+            ai_content = result["choices"][0]["message"]["content"]
             
+            # 提取使用量
+            usage = result.get("usage", {})
+            total_tokens = usage.get("total_tokens", 0)
+            prompt_tokens = usage.get("prompt_tokens", 0)
+            completion_tokens = usage.get("completion_tokens", 0)
+            finish_reason = result["choices"][0].get("finish_reason", "stop")
+            
+            # 记录到对话表
+            if self.db:
+                conversation_id = await self.db.save_conversation(
+                    device_id=device_id,
+                    session_id=session_id,
+                    user_message=message,
+                    ai_message=ai_content,
+                    duration_ms=duration_ms,
+                    total_tokens=total_tokens,
+                    context_messages=messages,
+                    request_data=request_data,
+                    response_data=result,
+                    model_name="glm-4",
+                    temperature=0.7,
+                    max_tokens=150,
+                    finish_reason=finish_reason,
+                    prompt_tokens=prompt_tokens,
+                    completion_tokens=completion_tokens,
+                    is_stream=False
+                )
+                
+                # 记录 API 日志
+                await self.db.log_ai_request(
+                    request_id=request_id,
+                    device_id=device_id,
+                    session_id=session_id,
+                    conversation_id=conversation_id,
+                    request_body=request_data,
+                    response_body=result,
+                    response_status=response.status_code,
+                    duration_ms=duration_ms,
+                    is_success=True,
+                    model="glm-4",
+                    endpoint=api_endpoint,
+                    api_key_prefix=self.api_key[:10] + "...",
+                    request_messages_count=len(messages),
+                    request_system_prompt=self.system_prompt,
+                    request_user_message=message,
+                    request_context=context,
+                    response_content=ai_content,
+                    response_finish_reason=finish_reason,
+                    usage_total_tokens=total_tokens,
+                    usage_prompt_tokens=prompt_tokens,
+                    usage_completion_tokens=completion_tokens,
+                    request_start_time=request_start_time,
+                    request_end_time=request_end_time
+                )
+            
+            return ai_content
+
         except Exception as e:
+            request_end_time = datetime.now()
+            duration_ms = int((request_end_time - request_start_time).total_seconds() * 1000)
+            
             logger.error(f"AI 对话失败：{e}")
+            
+            # 记录错误
+            if self.db:
+                await self.db.log_ai_request(
+                    request_id=request_id,
+                    device_id=device_id,
+                    session_id=session_id,
+                    request_body=request_data,
+                    response_status=getattr(e, 'response', None).status_code if hasattr(e, 'response') else 0,
+                    duration_ms=duration_ms,
+                    is_success=False,
+                    error_message=str(e),
+                    error_type=type(e).__name__,
+                    model="glm-4",
+                    endpoint=api_endpoint,
+                    api_key_prefix=self.api_key[:10] + "...",
+                    request_messages_count=len(messages),
+                    request_system_prompt=self.system_prompt,
+                    request_user_message=message,
+                    request_context=context,
+                    request_start_time=request_start_time,
+                    request_end_time=request_end_time
+                )
+            
             return f"抱歉，我现在有点累，我们稍后再聊好吗？(错误：{str(e)[:50]})"
-    
+
+    async def chat_stream(self, message: str, context: list = None, device_id: str = None, session_id: str = None):
+        """
+        发送对话请求（流式响应，完整记录）
+
+        Yields:
+            生成的文本片段
+        """
+        import uuid
+        from datetime import datetime
+        
+        request_id = str(uuid.uuid4())
+        request_start_time = datetime.now()
+        
+        messages = [
+            {"role": "system", "content": self.system_prompt},
+        ]
+
+        if context:
+            messages.extend(context[-5:])
+
+        messages.append({"role": "user", "content": message})
+
+        # 构建请求数据
+        request_data = {
+            "model": "glm-4",
+            "messages": messages,
+            "max_tokens": 150,
+            "temperature": 0.7,
+            "stream": True
+        }
+        
+        api_endpoint = "https://open.bigmodel.cn/api/paas/v4/chat/completions"
+        
+        full_content = ""
+        stream_chunks = 0
+        response_status = None
+        usage = {}
+        finish_reason = None
+        
+        try:
+            headers = {
+                "Authorization": f"Bearer {self.api_key}",
+                "Content-Type": "application/json"
+            }
+
+            # 使用 stream 接口
+            async with self.client.stream(
+                "POST",
+                api_endpoint,
+                headers=headers,
+                json=request_data
+            ) as response:
+                response_status = response.status_code
+                
+                async for line in response.aiter_lines():
+                    if line.startswith("data:"):
+                        data_str = line[5:].strip()
+                        if data_str == "[DONE]":
+                            break
+
+                        try:
+                            data_json = json.loads(data_str)
+                            if "choices" in data_json and len(data_json["choices"]) > 0:
+                                delta = data_json["choices"][0].get("delta", {})
+                                content = delta.get("content", "")
+                                if content:
+                                    full_content += content
+                                    stream_chunks += 1
+                                    yield content  # 实时返回片段
+                                
+                                # 提取结束原因
+                                if "finish_reason" in data_json["choices"][0]:
+                                    finish_reason = data_json["choices"][0]["finish_reason"]
+                                    
+                                # 提取使用量（通常在最后一个 chunk）
+                                if "usage" in data_json:
+                                    usage = data_json["usage"]
+                                    
+                        except json.JSONDecodeError:
+                            continue
+
+            request_end_time = datetime.now()
+            duration_ms = int((request_end_time - request_start_time).total_seconds() * 1000)
+            
+            # 记录到数据库
+            if self.db:
+                conversation_id = await self.db.save_conversation(
+                    device_id=device_id,
+                    session_id=session_id,
+                    user_message=message,
+                    ai_message=full_content,
+                    duration_ms=duration_ms,
+                    total_tokens=usage.get("total_tokens", 0),
+                    context_messages=messages,
+                    request_data=request_data,
+                    response_data={"choices": [{"message": {"content": full_content}}], "usage": usage},
+                    model_name="glm-4",
+                    temperature=0.7,
+                    max_tokens=150,
+                    finish_reason=finish_reason or "stop",
+                    prompt_tokens=usage.get("prompt_tokens", 0),
+                    completion_tokens=usage.get("completion_tokens", 0),
+                    is_stream=True
+                )
+                
+                # 记录 API 日志
+                await self.db.log_ai_request(
+                    request_id=request_id,
+                    device_id=device_id,
+                    session_id=session_id,
+                    conversation_id=conversation_id,
+                    request_body=request_data,
+                    response_body={"content": full_content, "usage": usage},
+                    response_status=response_status,
+                    duration_ms=duration_ms,
+                    is_success=True,
+                    model="glm-4",
+                    endpoint=api_endpoint,
+                    api_key_prefix=self.api_key[:10] + "...",
+                    request_messages_count=len(messages),
+                    request_system_prompt=self.system_prompt,
+                    request_user_message=message,
+                    request_context=context,
+                    response_content=full_content,
+                    response_finish_reason=finish_reason or "stop",
+                    usage_total_tokens=usage.get("total_tokens", 0),
+                    usage_prompt_tokens=usage.get("prompt_tokens", 0),
+                    usage_completion_tokens=usage.get("completion_tokens", 0),
+                    is_stream=True,
+                    stream_chunks_count=stream_chunks,
+                    request_start_time=request_start_time,
+                    request_end_time=request_end_time
+                )
+
+        except Exception as e:
+            request_end_time = datetime.now()
+            duration_ms = int((request_end_time - request_start_time).total_seconds() * 1000)
+            
+            logger.error(f"AI 流式对话失败：{e}")
+            
+            # 记录错误
+            if self.db:
+                await self.db.log_ai_request(
+                    request_id=request_id,
+                    device_id=device_id,
+                    session_id=session_id,
+                    request_body=request_data,
+                    response_status=response_status,
+                    duration_ms=duration_ms,
+                    is_success=False,
+                    error_message=str(e),
+                    error_type=type(e).__name__,
+                    model="glm-4",
+                    endpoint=api_endpoint,
+                    api_key_prefix=self.api_key[:10] + "...",
+                    request_messages_count=len(messages),
+                    request_system_prompt=self.system_prompt,
+                    request_user_message=message,
+                    request_context=context,
+                    is_stream=True,
+                    stream_chunks_count=stream_chunks,
+                    request_start_time=request_start_time,
+                    request_end_time=request_end_time
+                )
+            
+            yield f"抱歉，我现在有点累。(错误：{str(e)[:30]})"
+
     async def close(self):
         await self.client.aclose()
 
@@ -267,39 +535,71 @@ class SimpleASRClient:
 
 class ConnectionManager:
     """WebSocket 连接管理器"""
-    
+
     def __init__(self):
         self.connections: dict = {}
         self.contexts: dict = {}
-    
+
     async def connect(self, ws: WebSocket, device_id: str):
         await ws.accept()
         self.connections[device_id] = ws
         self.contexts[device_id] = []
         logger.info(f"[WebSocket] 新连接：{device_id}")
-        
+
     def disconnect(self, device_id: str):
         if device_id in self.connections:
             del self.connections[device_id]
         if device_id in self.contexts:
             del self.contexts[device_id]
         logger.info(f"[WebSocket] 连接断开：{device_id}")
-    
+
     async def send_bytes(self, device_id: str, data: bytes):
-        if device_id in self.connections:
-            try:
-                await self.connections[device_id].send_bytes(data)
-            except Exception as e:
-                logger.error(f"发送数据失败：{e}")
+        """发送二进制数据（带连接状态检查）"""
+        if device_id not in self.connections:
+            logger.warning(f"发送失败：设备 {device_id} 未连接")
+            return
+        
+        ws = self.connections[device_id]
+        
+        # 检查连接是否已关闭
+        try:
+            if ws.client_state.name == 'DISCONNECTED':
+                logger.warning(f"发送失败：设备 {device_id} 已断开")
                 self.disconnect(device_id)
-    
+                return
+        except Exception:
+            # 如果无法获取状态，尝试发送，失败则断开
+            pass
+        
+        try:
+            await ws.send_bytes(data)
+        except Exception as e:
+            logger.error(f"发送数据失败：{e}")
+            self.disconnect(device_id)
+
     async def send_json(self, device_id: str, data: dict):
-        if device_id in self.connections:
-            try:
-                await self.connections[device_id].send_json(data)
-            except Exception as e:
-                logger.error(f"发送 JSON 失败：{e}")
+        """发送 JSON 数据（带连接状态检查）"""
+        if device_id not in self.connections:
+            logger.warning(f"发送 JSON 失败：设备 {device_id} 未连接")
+            return
+        
+        ws = self.connections[device_id]
+        
+        # 检查连接是否已关闭
+        try:
+            if ws.client_state.name == 'DISCONNECTED':
+                logger.warning(f"发送 JSON 失败：设备 {device_id} 已断开")
                 self.disconnect(device_id)
+                return
+        except Exception:
+            # 如果无法获取状态，尝试发送，失败则断开
+            pass
+        
+        try:
+            await ws.send_json(data)
+        except Exception as e:
+            logger.error(f"发送 JSON 失败：{e}")
+            self.disconnect(device_id)
     
     def add_context(self, device_id: str, role: str, content: str):
         if device_id not in self.contexts:
@@ -317,30 +617,51 @@ manager = ConnectionManager()
 ai_client = None
 tts_client = None
 asr_client = None
+db: Database = None
+memory_mgr: MemoryManager = None
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """生命周期管理"""
-    global ai_client, tts_client, asr_client
+    global ai_client, tts_client, asr_client, db, memory_mgr
 
     logger.info("=" * 80)
-    logger.info("儿童智能语音玩具服务器 v1.0.0")
+    logger.info("儿童智能语音玩具服务器 v2.0.0")
     logger.info("=" * 80)
+
+    # 打印数据库配置
+    from db_config import DBConfig
+    DBConfig.print_config()
+
+    # 0. 自动检查和升级数据库
+    logger.info("检查数据库版本...")
+    from db_migrate_auto import check_database_version
+    db_upgraded = await check_database_version()
     
+    # 初始化数据库连接
+    logger.info("初始化数据库连接...")
+    db = get_database()
+    await db.connect()
+    logger.info(f"数据库连接成功 (类型：{db.db_type})")
+
     # 1. 初始化 AI 客户端
     logger.info("初始化 AI 客户端...")
     logger.info(f"AI_API_KEY: {AI_API_KEY[:10]}...{AI_API_KEY[-6:]}" if len(AI_API_KEY) > 20 else f"AI_API_KEY: ***")
-    ai_client = SimpleAIClient(AI_API_KEY)
-    
+    ai_client = SimpleAIClient(AI_API_KEY, db=db)
+
     # 2. 初始化 TTS 客户端
     logger.info("初始化 TTS 客户端...")
     tts_client = SimpleTTSClient()
-    
+
     # 3. 初始化 ASR 客户端（直接加载本地模型）
     logger.info("初始化 ASR 客户端（语音识别）...")
     asr_client = SimpleASRClient()
-    
+
+    # 4. 初始化记忆管理器
+    logger.info("初始化记忆管理器...")
+    memory_mgr = get_memory_manager(db)
+
     # 检查模型加载状态
     if asr_client.model:
         logger.info("✅ Whisper 模型已加载")
@@ -352,6 +673,8 @@ async def lifespan(app: FastAPI):
     logger.info("=" * 80)
     logger.info(f"AI 客户端：已初始化")
     logger.info(f"TTS 客户端：已初始化 (edge-tts)")
+    logger.info(f"数据库：已连接")
+    logger.info(f"记忆管理器：已初始化")
     if asr_client.model:
         logger.info(f"ASR 客户端：已初始化 (Whisper 模型已加载)")
     else:
@@ -361,8 +684,11 @@ async def lifespan(app: FastAPI):
 
     yield
 
+    # 关闭资源
     if ai_client:
         await ai_client.close()
+    if db:
+        await db.close()
     logger.info("服务器已关闭")
 
 
@@ -397,12 +723,14 @@ async def health():
 @app.websocket("/ws/audio/{device_id}")
 async def websocket_audio(ws: WebSocket, device_id: str):
     """
-    WebSocket 音频接口
-    
-    优化:
-    1. 降低音频阈值，减少等待时间
-    2. 并行处理 TTS 和响应
-    3. 支持连续对话
+    WebSocket 音频接口（支持流式响应）
+
+    消息类型:
+    - 0x01: 音频数据
+    - 0x02: TTS 音频
+    - 0x03: 流式文本片段
+    - 0x04: 唤醒事件
+    - 0x05: 状态上报
     """
     logger.info("=" * 80)
     logger.info(f"[WebSocket] 新连接：{device_id}")
@@ -410,10 +738,16 @@ async def websocket_audio(ws: WebSocket, device_id: str):
 
     await manager.connect(ws, device_id)
 
+    # 注册设备
+    if db:
+        await db.register_device(device_id, device_type="phone")
+        await db.update_device_status(device_id, last_seen=datetime.now())
+
     audio_buffer = bytearray()
     message_count = 0
     request_count = 0
-    
+    session_id = f"{device_id}_{datetime.now().strftime('%Y%m%d%H%M%S')}"
+
     # 优化：降低音频阈值到 1 秒
     min_audio_duration = 1.0  # 秒
     min_audio_bytes = int(SAMPLE_RATE * min_audio_duration * 2)  # 16bit = 2 字节
@@ -437,62 +771,147 @@ async def websocket_audio(ws: WebSocket, device_id: str):
                 # 优化：降低到 1 秒音频就开始处理
                 if len(audio_buffer) >= min_audio_bytes:
                     request_count += 1
+                    start_time = datetime.now()
                     logger.info("=" * 60)
                     logger.info(f"[处理] 请求 #{request_count} ({len(audio_buffer)/SAMPLE_RATE:.2f}秒音频)")
                     logger.info("=" * 60)
 
                     # 1. 语音识别 (ASR) - 真实识别
-                    logger.info("[1/4] ASR 语音识别...")
+                    logger.info("[1/5] ASR 语音识别...")
                     user_text = asr_client.transcribe(bytes(audio_buffer))
-                    
+                    asr_duration = (datetime.now() - start_time).total_seconds() * 1000
+
+                    # 记录 ASR 日志
+                    if db:
+                        await db.log_asr(
+                            device_id=device_id,
+                            audio_duration_ms=int(len(audio_buffer)/SAMPLE_RATE*1000),
+                            recognized_text=user_text,
+                            success=bool(user_text)
+                        )
+
                     # 如果识别结果为空，跳过本次请求
                     if not user_text:
                         logger.warning("[ASR] 未识别到有效语音，跳过本次请求")
                         audio_buffer.clear()
                         continue
-                    
+
                     logger.info(f"[ASR] ✅ 识别结果：{user_text}")
 
-                    # 2. AI 对话（与 TTS 并行）
-                    logger.info("[2/4] AI 对话...")
-                    context = manager.get_context(device_id)
-                    ai_response = await ai_client.chat(user_text, context)
+                    # 2. 获取对话上下文（包含历史记忆）
+                    logger.info("[2/5] 构建对话上下文...")
+                    if memory_mgr:
+                        context = await memory_mgr.build_context(device_id)
+                    else:
+                        context = manager.get_context(device_id)
+
+                    # 3. AI 对话（流式响应）
+                    logger.info("[3/5] AI 对话（流式）...")
+                    ai_response = ""
+                    
+                    # 发送流式响应开始标记
+                    await manager.send_json(device_id, {
+                        "type": "stream_start",
+                        "message_id": request_count
+                    })
+
+                    # 流式接收 AI 响应
+                    async for chunk in ai_client.chat_stream(user_text, context, device_id=device_id, session_id=session_id):
+                        ai_response += chunk
+                        # 实时发送文本片段
+                        await manager.send_json(device_id, {
+                            "type": "stream_chunk",
+                            "content": chunk
+                        })
+
+                    # 发送流式响应结束标记
+                    await manager.send_json(device_id, {
+                        "type": "stream_end",
+                        "message_id": request_count,
+                        "full_text": ai_response
+                    })
+
                     logger.info(f"[AI] ✅ {ai_response}")
+                    ai_duration = (datetime.now() - start_time).total_seconds() * 1000 - asr_duration
+
+                    # 更新上下文和记忆
                     manager.add_context(device_id, "user", user_text)
                     manager.add_context(device_id, "assistant", ai_response)
 
-                    # 3. 发送文本响应（立即发送，不等待 TTS）
-                    logger.info("[3/4] 发送文本响应...")
+                    # 保存到数据库
+                    if memory_mgr:
+                        await memory_mgr.save_conversation(
+                            device_id=device_id,
+                            session_id=session_id,
+                            user_message=user_text,
+                            ai_message=ai_response,
+                            duration_ms=int(ai_duration)
+                        )
+
+                    # 4. 发送完整文本响应（兼容旧客户端）
+                    logger.info("[4/5] 发送完整响应...")
                     await manager.send_json(device_id, {
                         "type": "response",
                         "text": ai_response
                     })
-                    logger.info(f"[响应] ✅ 已发送")
 
-                    # 4. TTS 合成（异步）
-                    logger.info("[4/4] TTS 合成...")
+                    # 5. TTS 合成（异步）
+                    logger.info("[5/5] TTS 合成...")
                     tts_audio = await tts_client.synthesize(ai_response)
+                    tts_duration = (datetime.now() - start_time).total_seconds() * 1000 - ai_duration
+
                     if tts_audio:
                         logger.info(f"[TTS] ✅ {len(tts_audio)} 字节")
                         await manager.send_bytes(device_id, bytes([0x02]) + tts_audio)
+                        
+                        # 记录 TTS 日志
+                        if db:
+                            await db.log_tts(
+                                device_id=device_id,
+                                text_content=ai_response,
+                                audio_duration_ms=int(tts_duration),
+                                file_size=len(tts_audio),
+                                success=True
+                            )
                     else:
                         logger.warning(f"[TTS] ❌ 失败")
+                        if db:
+                            await db.log_tts(
+                                device_id=device_id,
+                                text_content=ai_response,
+                                success=False,
+                                error_message="TTS 合成失败"
+                            )
 
                     # 清空缓冲区，准备下一次对话
                     audio_buffer.clear()
-                    logger.info(f"[完成] 请求 #{request_count} 完成")
+                    total_duration = (datetime.now() - start_time).total_seconds()
+                    logger.info(f"[完成] 请求 #{request_count} 完成 (总耗时：{total_duration:.2f}秒)")
                     logger.info("=" * 60)
 
             elif msg_type == 0x03:  # 状态上报
                 try:
                     status = json.loads(payload.decode('utf-8'))
                     logger.debug(f"[状态] {status}")
+                    
+                    # 更新设备状态
+                    if db and 'battery_level' in status:
+                        await db.update_device_status(
+                            device_id=device_id,
+                            battery_level=status.get('battery_level'),
+                            wifi_signal=status.get('wifi_signal'),
+                            last_seen=datetime.now()
+                        )
                 except:
                     pass
 
             elif msg_type == 0x04:  # 唤醒事件
                 logger.info(f"[唤醒] 清空缓冲区")
                 audio_buffer.clear()
+                
+                # 清空短期记忆，开始新对话
+                if memory_mgr:
+                    memory_mgr.clear_short_term(device_id)
 
     except WebSocketDisconnect:
         logger.info(f"[断开] {device_id}")
@@ -500,6 +919,10 @@ async def websocket_audio(ws: WebSocket, device_id: str):
         logger.error(f"[错误] {device_id}: {e}", exc_info=True)
     finally:
         manager.disconnect(device_id)
+        
+        # 更新设备离线状态
+        if db:
+            await db.update_device_status(device_id, last_seen=datetime.now())
 
 
 # 音频配置

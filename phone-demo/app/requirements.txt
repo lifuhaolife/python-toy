@@ -1,0 +1,9 @@
+# Android APP 依赖
+kivy>=2.3.0
+aiohttp>=3.9.0
+pyaudio>=0.2.14
+asyncio>=3.4.3
+
+# 打包工具
+buildozer>=1.5.0
+python-for-android>=2021.9.1

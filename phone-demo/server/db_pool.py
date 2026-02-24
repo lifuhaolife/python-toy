@@ -30,7 +30,7 @@ class DatabasePool:
     async def _connect_mysql(self) -> None:
         """连接 MySQL 数据库"""
         import aiomysql
-        
+
         try:
             self._pool = await aiomysql.create_pool(
                 host=self.config.MYSQL_HOST,
@@ -42,20 +42,19 @@ class DatabasePool:
                 minsize=1,
                 maxsize=self.config.MYSQL_POOL_SIZE,
                 pool_recycle=3600,  # 1 小时回收连接
-                pool_timeout=30,  # 连接超时
                 connect_timeout=10,
                 read_timeout=30,
                 write_timeout=30,
                 charset='utf8mb4'
             )
-            
+
             # 测试连接
             async with self._pool.acquire() as conn:
                 async with conn.cursor() as cursor:
                     await cursor.execute("SELECT 1")
-            
+
             self.logger.info(f"MySQL 连接池已创建 (大小：1-{self.config.MYSQL_POOL_SIZE})")
-            
+
         except Exception as e:
             self.logger.error(f"MySQL 连接失败：{e}")
             raise

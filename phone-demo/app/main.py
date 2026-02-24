@@ -112,17 +112,16 @@ class WebSocketManager:
         import aiohttp
 
         try:
+            # 创建新的 ClientSession，不设置超时
             if self.session is None or self.session.closed:
-                self.session = aiohttp.ClientSession()
+                timeout = aiohttp.ClientTimeout(total=None, connect=10, sock_read=None, sock_connect=10)
+                self.session = aiohttp.ClientSession(timeout=timeout)
 
             app_logger.info(f"正在连接：{url}")
             self._set_state(ConnectionState.CONNECTING)
 
-            # 移除 receive_timeout，避免在非异步环境报错
-            self.ws = await self.session.ws_connect(
-                url,
-                heartbeat=30
-            )
+            # 使用最简单的连接方式，不设置任何可能导致问题的参数
+            self.ws = await self.session.ws_connect(url)
 
             self.reconnect_attempts = 0
             self._set_state(ConnectionState.CONNECTED)

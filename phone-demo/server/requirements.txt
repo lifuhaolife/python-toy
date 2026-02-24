@@ -10,5 +10,13 @@ aiofiles>=23.2.0
 # TTS
 edge-tts>=6.1.0
 
-# 语音识别 (可选)
-openai-whisper>=20231117
+# 语音识别（可选）
+# 方案 1: FunASR Paraformer（推荐，中文优化）
+funasr>=1.0.0
+modelscope>=1.0.0
+torch>=2.0.0
+# 安装：conda install -c conda-forge funasr
+
+# 方案 2: Whisper（备用，多语言）
+# openai-whisper>=20231117
+# faster-whisper>=0.10.0

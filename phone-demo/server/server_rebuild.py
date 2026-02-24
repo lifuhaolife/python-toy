@@ -378,7 +378,7 @@ class SimpleAIClient:
                 total_tokens=kwargs['usage'].get('total_tokens', 0),
                 context_messages=kwargs['request_data']['messages'],
                 request_data=kwargs['request_data'],
-                response_data={"choices": [{"message": {"content": kwargs['full_content'}}], "usage": kwargs['usage']},
+                response_data={"choices": [{"message": {"content": kwargs['full_content']}}], "usage": kwargs['usage']},
                 model_name=kwargs['request_data']['model'],
                 temperature=kwargs['request_data']['temperature'],
                 max_tokens=kwargs['request_data']['max_tokens'],

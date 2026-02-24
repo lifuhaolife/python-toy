@@ -110,27 +110,27 @@ class WebSocketManager:
     async def _connect(self, url):
         """内部连接方法"""
         import aiohttp
-        
+
         try:
             if self.session is None or self.session.closed:
                 self.session = aiohttp.ClientSession()
-            
+
             app_logger.info(f"正在连接：{url}")
             self._set_state(ConnectionState.CONNECTING)
-            
+
+            # 移除 receive_timeout，避免在非异步环境报错
             self.ws = await self.session.ws_connect(
                 url,
-                heartbeat=30,
-                receive_timeout=60
+                heartbeat=30
             )
-            
+
             self.reconnect_attempts = 0
             self._set_state(ConnectionState.CONNECTED)
             app_logger.info("连接成功")
-            
+
             # 启动接收和发送任务
             self.task = asyncio.create_task(self._run_loop())
-            
+
         except Exception as e:
             app_logger.error(f"连接失败：{e}")
             self._set_state(ConnectionState.DISCONNECTED)

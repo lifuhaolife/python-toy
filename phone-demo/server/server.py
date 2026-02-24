@@ -27,6 +27,9 @@ if sys.platform == 'win32':
 from database import get_database, Database
 from memory_manager import get_memory_manager, MemoryManager
 
+# 导入优化的 ASR 客户端
+from asr_client import OptimizedASRClient, get_asr_client
+
 # 创建日志文件夹
 LOG_DIR = os.path.join(os.path.dirname(__file__), 'logs')
 os.makedirs(LOG_DIR, exist_ok=True)
@@ -444,93 +447,10 @@ class SimpleTTSClient:
             return b''
 
 
-class SimpleASRClient:
-    """语音识别客户端（使用 Whisper 真实识别）"""
-    
-    def __init__(self):
-        self.model = None
-        self.model_path = os.path.join(os.path.dirname(__file__), 'models', 'whisper-tiny')
-        logger.info("ASR 客户端：已初始化")
-        logger.info(f"模型路径：{self.model_path}")
-        
-        # 直接加载模型（不自动下载）
-        self._load_model()
-    
-    def _load_model(self):
-        """加载本地 Whisper 模型"""
-        try:
-            from faster_whisper import WhisperModel
-            
-            # 检查本地是否有模型
-            if not os.path.exists(self.model_path):
-                logger.error(f"模型不存在：{self.model_path}")
-                logger.error("请先下载 Whisper 模型:")
-                logger.error("  1. 运行：python download_whisper_model.py")
-                logger.error("  2. 或手动下载模型到：models/whisper-tiny/")
-                return
-            
-            # 加载模型
-            self.model = WhisperModel(
-                self.model_path,
-                device="cpu",
-                compute_type="int8"
-            )
-            logger.info("Whisper 模型加载成功")
-            
-        except Exception as e:
-            logger.error(f"模型加载失败：{e}")
-            self.model = None
-    
-    def transcribe(self, audio_data: bytes) -> str:
-        """
-        真实语音识别
-        
-        Args:
-            audio_data: PCM 音频数据 (16kHz, 16bit, 单声道)
-            
-        Returns:
-            识别的文本（如果识别失败返回空字符串）
-        """
-        # 如果模型未加载，直接返回空字符串
-        if self.model is None:
-            logger.error("模型未加载，无法识别语音")
-            return ""
-        
-        try:
-            # 将字节转换为 float32 数组
-            import numpy as np
-            audio_array = np.frombuffer(audio_data, dtype=np.int16).astype(np.float32) / 32768.0
-            
-            logger.info(f"开始语音识别，音频长度：{len(audio_array)/16000:.2f}秒")
-            
-            # 使用 Whisper 识别
-            segments, info = self.model.transcribe(
-                audio_array,
-                language="zh",
-                vad_filter=True,  # 语音活动检测
-                vad_parameters=dict(
-                    threshold=0.5,
-                    min_silence_duration_ms=500
-                )
-            )
-            
-            # 收集所有识别结果
-            text = ""
-            for segment in segments:
-                text += segment.text
-            
-            text = text.strip()
-            
-            if text:
-                logger.info(f"[ASR] ✅ 识别结果：{text}")
-            else:
-                logger.warning("[ASR] 未识别到有效语音（返回空字符串）")
-            
-            return text  # 返回真实识别结果，可能为空
-            
-        except Exception as e:
-            logger.error(f"语音识别失败：{e}")
-            return ""  # 失败返回空字符串
+# 使用优化的 ASR 客户端替代旧的 SimpleASRClient
+# class SimpleASRClient:
+#     """语音识别客户端（使用 Whisper 真实识别）"""
+#     已废弃，使用 asr_client.py 中的 OptimizedASRClient
 
 
 class ConnectionManager:
@@ -654,16 +574,16 @@ async def lifespan(app: FastAPI):
     logger.info("初始化 TTS 客户端...")
     tts_client = SimpleTTSClient()
 
-    # 3. 初始化 ASR 客户端（直接加载本地模型）
+    # 3. 初始化 ASR 客户端（使用优化的版本）
     logger.info("初始化 ASR 客户端（语音识别）...")
-    asr_client = SimpleASRClient()
+    asr_client = get_asr_client()
 
     # 4. 初始化记忆管理器
     logger.info("初始化记忆管理器...")
     memory_mgr = get_memory_manager(db)
 
     # 检查模型加载状态
-    if asr_client.model:
+    if asr_client and asr_client.model:
         logger.info("✅ Whisper 模型已加载")
     else:
         logger.error("❌ Whisper 模型加载失败")
